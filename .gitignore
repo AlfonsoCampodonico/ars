@@ -1,0 +1,14 @@
+# Go
+/bin/
+/example/
+*.test
+
+# TLA+ / TLC / TLAPS output
+spec/states/
+spec/**/states/
+spec/*_TTrace_*
+spec/**/*_TTrace_*
+spec/.tlacache/
+spec/**/.tlacache/
+tools/
+*.out
