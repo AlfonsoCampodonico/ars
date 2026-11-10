@@ -374,7 +374,7 @@ func (st *State) addClaims(claims []Claim, wins func(int) map[Kind]window) {
 		// An honored receipt would have put the entry on the log inside its
 		// window, which was skipped above: a valid receipt here is broken.
 		data, _ := json.Marshal(e)
-		if r := c.Receipt; v.receipt == nil && r != nil && r.Verify(def.LogKey) && r.For(data) && w.has(r.Time) {
+		if r := c.Receipt; v.receipt == nil && r != nil && receiptFor(*r, def.LogOrigin, def.LogKey, data) && w.has(r.Time) {
 			v.entry, v.receipt = e, r
 		}
 	}

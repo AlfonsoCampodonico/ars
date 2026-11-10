@@ -100,6 +100,7 @@ type SagaDef struct {
 	Start          time.Time         `json:"start"`
 	Orgs           []Party           `json:"orgs"`
 	Oracles        []Party           `json:"oracles,omitempty"`
+	LogOrigin      string            `json:"log_origin"` // the saga's log, named in its receipts
 	LogKey         ed25519.PublicKey `json:"log_pubkey"` // signs log receipts
 	Steps          []StepDef         `json:"steps"`
 	CompDur        Duration          `json:"compensation_window"`         // receipts and undo attestations
@@ -127,8 +128,8 @@ func (d *SagaDef) Validate() error {
 	if len(d.Steps) == 0 {
 		return errors.New("saga has no steps")
 	}
-	if len(d.LogKey) != ed25519.PublicKeySize {
-		return errors.New("bad log public key")
+	if d.LogOrigin == "" || len(d.LogKey) != ed25519.PublicKeySize {
+		return errors.New("log origin and public key are required")
 	}
 	hasDependent := make([]bool, len(d.Steps))
 	for _, s := range d.Steps {

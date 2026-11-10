@@ -51,6 +51,7 @@ const (
 	Carrier     = "carrier"
 	PSPName     = "psp"
 	LogOperator = "log-operator"
+	LogOrigin   = "ars-demo-log"
 )
 
 // CheckoutTerms is the demo term sheet.
@@ -79,11 +80,12 @@ func CheckoutDef(start time.Time, terms protocol.CheckoutTerms) *protocol.SagaDe
 	d := func(s string) protocol.Duration { v, _ := time.ParseDuration(s); return protocol.Duration{Duration: v} }
 	raw, _ := json.Marshal(terms)
 	return &protocol.SagaDef{
-		ID:      "saga-" + terms.OrderID,
-		Start:   start,
-		Orgs:    []protocol.Party{pub(Buyer), pub(Merchant), pub(Carrier)},
-		Oracles: []protocol.Party{pub(PSPName)},
-		LogKey:  Key(LogOperator).Public().(ed25519.PublicKey),
+		ID:        "saga-" + terms.OrderID,
+		Start:     start,
+		Orgs:      []protocol.Party{pub(Buyer), pub(Merchant), pub(Carrier)},
+		Oracles:   []protocol.Party{pub(PSPName)},
+		LogOrigin: LogOrigin,
+		LogKey:    Key(LogOperator).Public().(ed25519.PublicKey),
 		Steps: []protocol.StepDef{
 			{Name: "lock terms", Plan: "checkout.lock", Owner: Merchant, Benef: Buyer, PlanDur: d("3m"), EffectDur: d("5m"), RespondDur: d("5m")},
 			{Name: "pay", Deps: []int{StepLock}, Plan: "checkout.pay", Owner: Merchant, Benef: Buyer, Oracle: PSPName, PlanDur: d("3m"), EffectDur: d("10m"), RespondDur: d("5m")},
@@ -129,12 +131,12 @@ type World struct {
 // NewWorld wires up a checkout saga with honest defaults.
 func NewWorld(terms protocol.CheckoutTerms) *World {
 	clock := &Clock{t: time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)}
-	log := translog.New("ars-demo-log", Key(LogOperator), clock.Now)
+	log := translog.New(LogOrigin, Key(LogOperator), clock.Now)
 	bus := &protocol.Bus{}
 	def := CheckoutDef(clock.Now().Add(time.Minute), terms)
 	w := &World{
 		Clock: clock, Log: log, Gossip: bus, Def: def,
-		PSP: &oracle.PSP{Name: PSPName, Key: Key(PSPName), Log: log, LogKey: def.LogKey,
+		PSP: &oracle.PSP{Name: PSPName, Key: Key(PSPName), Log: log, LogOrigin: def.LogOrigin, LogKey: def.LogKey,
 			Gossip: bus, Clock: clock.Now},
 		Real: make([]string, len(def.Steps)), Refs: make([]string, len(def.Steps)),
 	}

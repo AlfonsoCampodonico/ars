@@ -24,12 +24,13 @@ type Charge struct {
 
 // PSP is the mock payment processor.
 type PSP struct {
-	Name   string
-	Key    ed25519.PrivateKey
-	Log    translog.API
-	LogKey ed25519.PublicKey
-	Gossip protocol.Gossip // reports the log refuses are gossiped as claims
-	Clock  func() time.Time
+	Name      string
+	Key       ed25519.PrivateKey
+	Log       translog.API
+	LogOrigin string
+	LogKey    ed25519.PublicKey
+	Gossip    protocol.Gossip // reports the log refuses are gossiped as claims
+	Clock     func() time.Time
 
 	mu      sync.Mutex
 	charges map[string]*Charge
@@ -43,7 +44,7 @@ func (p *PSP) submitter(saga string) *protocol.Submitter {
 	}
 	if p.subs[saga] == nil {
 		p.subs[saga] = &protocol.Submitter{Saga: saga, From: p.Name, Key: p.Key, Log: p.Log,
-			LogKey: p.LogKey, Gossip: p.Gossip, Clock: p.Clock}
+			LogOrigin: p.LogOrigin, LogKey: p.LogKey, Gossip: p.Gossip, Clock: p.Clock}
 	}
 	return p.subs[saga]
 }

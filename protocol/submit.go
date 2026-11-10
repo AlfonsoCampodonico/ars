@@ -45,6 +45,12 @@ func (c Claim) Verify(pub ed25519.PublicKey) bool {
 	return len(pub) == ed25519.PublicKeySize && ed25519.Verify(pub, c.signingBytes(), c.Sig) && c.Entry.Verify(pub)
 }
 
+// receiptFor reports whether r is a valid receipt for data from the saga's
+// own log. The origin matters: an operator may sign several logs with one key.
+func receiptFor(r translog.Receipt, origin string, key ed25519.PublicKey, data []byte) bool {
+	return r.Origin == origin && r.Verify(key) && r.For(data)
+}
+
 // Gossip carries claims between every party of a saga. Every org must see
 // the same claims before the saga's outcome is final (see LogFork.tla).
 type Gossip interface {
@@ -91,13 +97,14 @@ func ReadRecords(log translog.API) ([]Record, error) {
 // log refuses an entry, or later doesn't hold one it gave a receipt for,
 // the submitter gossips a claim instead.
 type Submitter struct {
-	Saga   string
-	From   string
-	Key    ed25519.PrivateKey
-	Log    translog.API
-	LogKey ed25519.PublicKey
-	Gossip Gossip
-	Clock  func() time.Time
+	Saga      string
+	From      string
+	Key       ed25519.PrivateKey
+	Log       translog.API
+	LogOrigin string
+	LogKey    ed25519.PublicKey
+	Gossip    Gossip
+	Clock     func() time.Time
 
 	mu      sync.Mutex
 	sent    []sent
@@ -130,7 +137,7 @@ func (s *Submitter) Submit(e Entry) error {
 	}
 	at := s.now()
 	r, err := s.Log.Append(b)
-	if err == nil && r.Verify(s.LogKey) && r.For(b) {
+	if err == nil && receiptFor(r, s.LogOrigin, s.LogKey, b) {
 		s.mu.Lock()
 		s.sent = append(s.sent, sent{entry: e, at: at, receipt: r})
 		s.mu.Unlock()
@@ -194,6 +201,8 @@ func (s *Submitter) Claimed(step int, kinds ...Kind) bool {
 // synced folder). A real deployment gossips over the network instead.
 type DirGossip struct{ Dir string }
 
+const maxClaimSize = 1 << 20
+
 func (g DirGossip) Publish(c Claim) error {
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -215,11 +224,17 @@ func (g DirGossip) Claims() ([]Claim, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Anyone who can write the directory can drop junk in it: skip whatever
+	// isn't a small regular file holding a claim, so one bad file can't stop
+	// an org from evaluating the saga.
 	var out []Claim
 	for _, f := range files {
+		if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxClaimSize {
+			continue
+		}
 		b, err := os.ReadFile(f)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		var c Claim
 		if json.Unmarshal(b, &c) == nil {
