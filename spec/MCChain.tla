@@ -6,4 +6,7 @@ MCDeps   == <<{}, {1}, {}>>
 MCOwner  == <<"a", "b", "c">>
 MCBenef  == <<"c", "a", "b">>
 MCOracle == {1}
+MCPivot  == {}
+\* State constraint: at most one censorship claim (see README).
+OneClaim == Cardinality(claims) <= 1
 ====

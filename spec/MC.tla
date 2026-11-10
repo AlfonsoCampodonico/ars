@@ -8,4 +8,9 @@ MCDeps   == <<{}, {}, {1, 2}>>
 MCOwner  == <<"a", "c", "b">>
 MCBenef  == <<"c", "b", "a">>
 MCOracle == {1}
+MCPivot  == {}
+\* State constraints: at most this many censorship claims (true or false),
+\* which keeps the state space tractable. See README.
+OneClaim  == Cardinality(claims) <= 1
+TwoClaims == Cardinality(claims) <= 2
 ====

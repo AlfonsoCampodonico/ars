@@ -9,4 +9,7 @@ MCOwner  == <<"a", "c", "b">>
 MCBenef  == <<"c", "b", "a">>
 \* Same saga, but the oracle covers step 2, where the Byzantine org is OWNER.
 MCOracle == {2}
+MCPivot  == {}
+\* State constraint: at most one censorship claim (see README).
+OneClaim == Cardinality(claims) <= 1
 ====
