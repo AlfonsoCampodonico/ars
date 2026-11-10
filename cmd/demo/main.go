@@ -138,7 +138,7 @@ func writeExample(dir string) error {
 	for i := range def.Oracles {
 		def.Oracles[i].PubKey = pubs[def.Oracles[i].Name]
 	}
-	def.LogKey = pubs["log"] // arslog -key <dir>/log.key
+	def.LogOrigin, def.LogKey = "ars-log", pubs["log"] // arslog -key <dir>/log.key (default origin)
 	b, err := json.MarshalIndent(def, "", "  ")
 	if err != nil {
 		return err

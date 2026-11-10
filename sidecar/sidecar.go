@@ -38,7 +38,7 @@ type Sidecar struct {
 func (s *Sidecar) submitter() *protocol.Submitter {
 	if s.subm == nil {
 		s.subm = &protocol.Submitter{Saga: s.Def.ID, From: s.Org, Key: s.Key, Log: s.Log,
-			LogKey: s.Def.LogKey, Gossip: s.Gossip, Clock: s.Clock}
+			LogOrigin: s.Def.LogOrigin, LogKey: s.Def.LogKey, Gossip: s.Gossip, Clock: s.Clock}
 	}
 	return s.subm
 }
