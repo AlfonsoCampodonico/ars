@@ -156,4 +156,4 @@ are now split into an owner window and a beneficiary window.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Copyright 2026 Alfonso Campodónico. Licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

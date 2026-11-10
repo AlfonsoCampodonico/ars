@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/protocol"
 )
 
 func TestScenarios(t *testing.T) {

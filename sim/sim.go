@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"ars/oracle"
-	"ars/protocol"
-	"ars/sidecar"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/oracle"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/sidecar"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 // Clock is a manually advanced clock.

@@ -19,10 +19,10 @@ import (
 	"strings"
 	"time"
 
-	"ars/keys"
-	"ars/protocol"
-	"ars/sim"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/keys"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/sim"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 func main() {

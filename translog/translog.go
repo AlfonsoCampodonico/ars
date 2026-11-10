@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"ars/merkle"
+	"github.com/AlfonsoCampodonico/ars/merkle"
 )
 
 // Leaf is one stored entry. The log assigns Index and Time.

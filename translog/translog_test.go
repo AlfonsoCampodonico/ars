@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"ars/merkle"
+	"github.com/AlfonsoCampodonico/ars/merkle"
 )
 
 func newLog(t *testing.T) (*Log, ed25519.PublicKey) {

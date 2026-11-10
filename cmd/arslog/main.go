@@ -11,8 +11,8 @@ import (
 	"log"
 	"net/http"
 
-	"ars/keys"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/keys"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 func main() {

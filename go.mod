@@ -1,4 +1,4 @@
-module ars
+module github.com/AlfonsoCampodonico/ars
 
 go 1.25.0
 

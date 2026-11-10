@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"ars/merkle"
+	"github.com/AlfonsoCampodonico/ars/merkle"
 )
 
 // Handler serves a log over HTTP:

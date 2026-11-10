@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"sync"
 
-	"ars/protocol"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 // Charge is a captured payment.

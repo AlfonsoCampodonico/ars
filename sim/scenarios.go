@@ -3,8 +3,8 @@ package sim
 import (
 	"encoding/json"
 
-	"ars/protocol"
-	"ars/sidecar"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/sidecar"
 )
 
 // Scenario is a named checkout run with its expected outcome.

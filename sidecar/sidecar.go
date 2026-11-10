@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"ars/protocol"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 // Sidecar runs the protocol for one org in one saga.

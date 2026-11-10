@@ -17,10 +17,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ars/keys"
-	"ars/protocol"
-	"ars/sidecar"
-	"ars/translog"
+	"github.com/AlfonsoCampodonico/ars/keys"
+	"github.com/AlfonsoCampodonico/ars/protocol"
+	"github.com/AlfonsoCampodonico/ars/sidecar"
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 type stepIn struct {
