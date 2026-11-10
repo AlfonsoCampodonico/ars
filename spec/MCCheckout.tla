@@ -19,4 +19,10 @@ CkDeps   == <<{}, {1}, {1}, {2, 3}>>
 CkOwner  == <<"merchant", "merchant", "merchant", "carrier">>
 CkBenef  == <<"buyer", "buyer", "carrier", "buyer">>
 CkOracle == {2}
+\* Delivery can't be undone: ship is the pivot.
+CkPivot  == {4}
+\* State constraints: at most this many censorship claims (true or false),
+\* which keeps the state space tractable. See README.
+OneClaim  == Cardinality(claims) <= 1
+TwoClaims == Cardinality(claims) <= 2
 ====
