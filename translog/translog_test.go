@@ -24,8 +24,13 @@ func TestProofsOverHTTP(t *testing.T) {
 	c := &Client{Base: srv.URL}
 	var mid Checkpoint
 	for i := 0; i < 13; i++ {
-		if _, err := c.Append([]byte(fmt.Sprintf("e%d", i))); err != nil {
+		data := []byte(fmt.Sprintf("e%d", i))
+		r, err := c.Append(data)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if !r.Verify(pub) || r.Index != uint64(i) || !r.For(data) || r.For([]byte("other")) {
+			t.Fatalf("bad receipt for entry %d: %+v", i, r)
 		}
 		if i == 4 {
 			mid, _ = c.Latest()

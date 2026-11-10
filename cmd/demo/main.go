@@ -64,10 +64,13 @@ func run(sc sim.Scenario, verbose bool) {
 		fmt.Printf("    %-11s %s\n", s.Name, s.Stage)
 	}
 	if st.Aborted {
-		fmt.Printf("  Saga aborted at %s; compensation %s\n", st.AbortAt.Format("15:04"), st.Comp)
+		fmt.Printf("  Saga aborted at %s; compensation %s\n", st.EndedAt.Format("15:04"), st.Comp)
+	}
+	if st.Held {
+		fmt.Printf("  Saga held at %s: disputed, nothing commits or unwinds until resolved externally\n", st.EndedAt.Format("15:04"))
 	}
 	fmt.Printf("  Buyer's card: %s\n", map[string]string{"no": "never charged", "done": "CHARGED", "undone": "charged then refunded"}[w.Observed(sim.StepPay)])
-	if len(st.Evidence) == 0 {
+	if len(st.Evidence) == 0 && len(st.Operator) == 0 {
 		fmt.Println("  Evidence: none")
 	}
 	for _, e := range st.Evidence {
@@ -75,6 +78,12 @@ func run(sc sim.Scenario, verbose bool) {
 	}
 	for _, d := range st.Disputes {
 		fmt.Printf("  Dispute:  step %d, %s vs %s (no oracle; resolve externally)\n", d.Step, d.Owner, d.Benef)
+	}
+	for _, c := range st.Censored {
+		fmt.Printf("  Dispute:  step %d, %s vs the log operator (%s refused; resolve externally)\n", c.Step, c.From, c.Kind)
+	}
+	for _, e := range st.Operator {
+		fmt.Printf("  Evidence: %s %s step %d  %s\n", e.Org, e.Kind, e.Step, e.Detail)
 	}
 	fmt.Printf("  Bonds:    buyer=%s merchant=%s carrier=%s\n",
 		st.Bonds[sim.Buyer], st.Bonds[sim.Merchant], st.Bonds[sim.Carrier])
@@ -113,7 +122,7 @@ func writeExample(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	names := []string{sim.Buyer, sim.Merchant, sim.Carrier, sim.PSPName}
+	names := []string{sim.Buyer, sim.Merchant, sim.Carrier, sim.PSPName, "log"}
 	pubs := map[string]ed25519.PublicKey{}
 	for _, n := range names {
 		k, err := keys.LoadOrCreate(filepath.Join(dir, n+".key"))
@@ -129,6 +138,7 @@ func writeExample(dir string) error {
 	for i := range def.Oracles {
 		def.Oracles[i].PubKey = pubs[def.Oracles[i].Name]
 	}
+	def.LogKey = pubs["log"] // arslog -key <dir>/log.key
 	b, err := json.MarshalIndent(def, "", "  ")
 	if err != nil {
 		return err

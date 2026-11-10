@@ -5,9 +5,9 @@ package oracle
 
 import (
 	"crypto/ed25519"
-	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/AlfonsoCampodonico/ars/protocol"
 	"github.com/AlfonsoCampodonico/ars/translog"
@@ -24,20 +24,52 @@ type Charge struct {
 
 // PSP is the mock payment processor.
 type PSP struct {
-	Name string
-	Key  ed25519.PrivateKey
-	Log  translog.API
+	Name   string
+	Key    ed25519.PrivateKey
+	Log    translog.API
+	LogKey ed25519.PublicKey
+	Gossip protocol.Gossip // reports the log refuses are gossiped as claims
+	Clock  func() time.Time
 
 	mu      sync.Mutex
 	charges map[string]*Charge
 	n       int
+	subs    map[string]*protocol.Submitter // per saga
+}
+
+func (p *PSP) submitter(saga string) *protocol.Submitter {
+	if p.subs == nil {
+		p.subs = map[string]*protocol.Submitter{}
+	}
+	if p.subs[saga] == nil {
+		p.subs[saga] = &protocol.Submitter{Saga: saga, From: p.Name, Key: p.Key, Log: p.Log,
+			LogKey: p.LogKey, Gossip: p.Gossip, Clock: p.Clock}
+	}
+	return p.subs[saga]
 }
 
 func (p *PSP) report(saga string, step int, kind protocol.Kind, ref string) error {
-	e := protocol.Entry{Saga: saga, Kind: kind, From: p.Name, Step: step, Ref: ref}.Sign(p.Key)
-	b, _ := json.Marshal(e)
-	_, err := p.Log.Append(b)
-	return err
+	return p.submitter(saga).Submit(protocol.Entry{Kind: kind, Step: step, Ref: ref})
+}
+
+// Audit checks that the log still holds every report it gave a receipt for.
+func (p *PSP) Audit() error {
+	recs, err := protocol.ReadRecords(p.Log)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	subs := make([]*protocol.Submitter, 0, len(p.subs))
+	for _, s := range p.subs {
+		subs = append(subs, s)
+	}
+	p.mu.Unlock()
+	for _, s := range subs {
+		if err := s.Audit(recs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Capture moves money and reports it.

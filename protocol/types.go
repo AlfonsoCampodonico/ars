@@ -88,6 +88,7 @@ type StepDef struct {
 	Owner      string   `json:"owner"`            // performs the side effect
 	Benef      string   `json:"benef"`            // observes the side effect
 	Oracle     string   `json:"oracle,omitempty"` // trusted oracle, if any
+	Pivot      bool     `json:"pivot,omitempty"`  // effect can't be undone (e.g. delivery)
 	PlanDur    Duration `json:"plan_window"`      // all orgs vote
 	EffectDur  Duration `json:"effect_window"`    // owner attests the effect
 	RespondDur Duration `json:"respond_window"`   // beneficiary confirms or disputes
@@ -95,15 +96,16 @@ type StepDef struct {
 
 // SagaDef is agreed by all orgs before the saga starts.
 type SagaDef struct {
-	ID             string          `json:"id"`
-	Start          time.Time       `json:"start"`
-	Orgs           []Party         `json:"orgs"`
-	Oracles        []Party         `json:"oracles,omitempty"`
-	Steps          []StepDef       `json:"steps"`
-	CompDur        Duration        `json:"compensation_window"`         // receipts and undo attestations
-	CompRespondDur Duration        `json:"compensation_respond_window"` // beneficiaries check undos
-	Terms          json.RawMessage `json:"terms"`                       // input to every plan
-	Bond           int64           `json:"bond_cents"`
+	ID             string            `json:"id"`
+	Start          time.Time         `json:"start"`
+	Orgs           []Party           `json:"orgs"`
+	Oracles        []Party           `json:"oracles,omitempty"`
+	LogKey         ed25519.PublicKey `json:"log_pubkey"` // signs log receipts
+	Steps          []StepDef         `json:"steps"`
+	CompDur        Duration          `json:"compensation_window"`         // receipts and undo attestations
+	CompRespondDur Duration          `json:"compensation_respond_window"` // beneficiaries check undos
+	Terms          json.RawMessage   `json:"terms"`                       // input to every plan
+	Bond           int64             `json:"bond_cents"`
 }
 
 // Validate checks structural rules the spec ASSUMEs.
@@ -125,6 +127,17 @@ func (d *SagaDef) Validate() error {
 	if len(d.Steps) == 0 {
 		return errors.New("saga has no steps")
 	}
+	if len(d.LogKey) != ed25519.PublicKeySize {
+		return errors.New("bad log public key")
+	}
+	hasDependent := make([]bool, len(d.Steps))
+	for _, s := range d.Steps {
+		for _, dep := range s.Deps {
+			if dep >= 0 && dep < len(d.Steps) {
+				hasDependent[dep] = true
+			}
+		}
+	}
 	for i, s := range d.Steps {
 		for _, dep := range s.Deps {
 			if dep < 0 || dep >= i {
@@ -136,6 +149,14 @@ func (d *SagaDef) Validate() error {
 		}
 		if s.Oracle != "" && !oracles[s.Oracle] {
 			return fmt.Errorf("step %d: unknown oracle %q", i, s.Oracle)
+		}
+		// A pivot can't be undone, so nothing may abort after it commits:
+		// it must be the last step, and every other step must lead to it.
+		if s.Pivot && i != len(d.Steps)-1 {
+			return fmt.Errorf("step %d: a pivot must be the last step", i)
+		}
+		if i != len(d.Steps)-1 && !hasDependent[i] && d.Steps[len(d.Steps)-1].Pivot {
+			return fmt.Errorf("step %d: every step must lead to the pivot", i)
 		}
 		if s.PlanDur.Duration <= 0 || s.EffectDur.Duration <= 0 || s.RespondDur.Duration <= 0 {
 			return fmt.Errorf("step %d: windows must be positive", i)
@@ -175,4 +196,5 @@ type Record struct {
 	Entry Entry
 	Time  time.Time
 	Index uint64
+	Leaf  string // hex Merkle leaf hash, to check receipts against
 }
