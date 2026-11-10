@@ -13,7 +13,7 @@ import (
 
 // Handler serves a log over HTTP:
 //
-//	POST /entries              body = raw entry bytes -> Leaf
+//	POST /entries              body = raw entry bytes -> Receipt
 //	GET  /entries?from=N       -> []Leaf
 //	GET  /checkpoint           -> latest Checkpoint
 //	GET  /checkpoint?size=N    -> Checkpoint at size N
@@ -104,13 +104,13 @@ func decode(resp *http.Response, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) Append(data []byte) (Leaf, error) {
-	var lf Leaf
+func (c *Client) Append(data []byte) (Receipt, error) {
+	var r Receipt
 	resp, err := c.http().Post(c.Base+"/entries", "application/octet-stream", bytes.NewReader(data))
 	if err != nil {
-		return lf, err
+		return r, err
 	}
-	return lf, decode(resp, &lf)
+	return r, decode(resp, &r)
 }
 
 func (c *Client) Entries(from uint64) ([]Leaf, error) {

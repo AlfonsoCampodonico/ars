@@ -44,12 +44,13 @@ const (
 	StepShip
 )
 
-// Org names.
+// Party names.
 const (
-	Buyer    = "buyer"
-	Merchant = "merchant"
-	Carrier  = "carrier"
-	PSPName  = "psp"
+	Buyer       = "buyer"
+	Merchant    = "merchant"
+	Carrier     = "carrier"
+	PSPName     = "psp"
+	LogOperator = "log-operator"
 )
 
 // CheckoutTerms is the demo term sheet.
@@ -82,11 +83,13 @@ func CheckoutDef(start time.Time, terms protocol.CheckoutTerms) *protocol.SagaDe
 		Start:   start,
 		Orgs:    []protocol.Party{pub(Buyer), pub(Merchant), pub(Carrier)},
 		Oracles: []protocol.Party{pub(PSPName)},
+		LogKey:  Key(LogOperator).Public().(ed25519.PublicKey),
 		Steps: []protocol.StepDef{
 			{Name: "lock terms", Plan: "checkout.lock", Owner: Merchant, Benef: Buyer, PlanDur: d("3m"), EffectDur: d("5m"), RespondDur: d("5m")},
 			{Name: "pay", Deps: []int{StepLock}, Plan: "checkout.pay", Owner: Merchant, Benef: Buyer, Oracle: PSPName, PlanDur: d("3m"), EffectDur: d("10m"), RespondDur: d("5m")},
 			{Name: "reserve", Deps: []int{StepLock}, Plan: "checkout.reserve", Owner: Merchant, Benef: Carrier, PlanDur: d("3m"), EffectDur: d("10m"), RespondDur: d("5m")},
-			{Name: "ship", Deps: []int{StepPay, StepReserve}, Plan: "checkout.ship", Owner: Carrier, Benef: Buyer, PlanDur: d("3m"), EffectDur: d("30m"), RespondDur: d("10m")},
+			// Delivery can't be undone, so ship is the pivot: the last step, after everything else committed.
+			{Name: "ship", Deps: []int{StepPay, StepReserve}, Plan: "checkout.ship", Owner: Carrier, Benef: Buyer, Pivot: true, PlanDur: d("3m"), EffectDur: d("30m"), RespondDur: d("10m")},
 		},
 		CompDur:        d("20m"),
 		CompRespondDur: d("10m"),
@@ -112,24 +115,27 @@ type Org struct {
 
 // World is one simulated saga.
 type World struct {
-	Clock *Clock
-	Log   *translog.Log
-	Def   *protocol.SagaDef
-	PSP   *oracle.PSP
-	Orgs  []*Org
-	Real  []string // per step: "no", "done", "undone" -- what really happened
-	Refs  []string
-	Trace []string
+	Clock  *Clock
+	Log    *translog.Log
+	Gossip *protocol.Bus
+	Def    *protocol.SagaDef
+	PSP    *oracle.PSP
+	Orgs   []*Org
+	Real   []string // per step: "no", "done", "undone" -- what really happened
+	Refs   []string
+	Trace  []string
 }
 
 // NewWorld wires up a checkout saga with honest defaults.
 func NewWorld(terms protocol.CheckoutTerms) *World {
 	clock := &Clock{t: time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)}
-	log := translog.New("ars-demo-log", Key("log-operator"), clock.Now)
+	log := translog.New("ars-demo-log", Key(LogOperator), clock.Now)
+	bus := &protocol.Bus{}
 	def := CheckoutDef(clock.Now().Add(time.Minute), terms)
 	w := &World{
-		Clock: clock, Log: log, Def: def,
-		PSP:  &oracle.PSP{Name: PSPName, Key: Key(PSPName), Log: log},
+		Clock: clock, Log: log, Gossip: bus, Def: def,
+		PSP: &oracle.PSP{Name: PSPName, Key: Key(PSPName), Log: log, LogKey: def.LogKey,
+			Gossip: bus, Clock: clock.Now},
 		Real: make([]string, len(def.Steps)), Refs: make([]string, len(def.Steps)),
 	}
 	for i := range w.Real {
@@ -137,7 +143,7 @@ func NewWorld(terms protocol.CheckoutTerms) *World {
 	}
 	for _, n := range []string{Buyer, Merchant, Carrier} {
 		w.Orgs = append(w.Orgs, &Org{Name: n, Car: &sidecar.Sidecar{
-			Org: n, Key: Key(n), Def: def, Plans: protocol.CheckoutPlans(), Log: log, Clock: clock.Now,
+			Org: n, Key: Key(n), Def: def, Plans: protocol.CheckoutPlans(), Log: log, Gossip: bus, Clock: clock.Now,
 		}})
 	}
 	return w
@@ -179,8 +185,12 @@ func (w *World) DoEffect(step int) string {
 	return w.Refs[step]
 }
 
-// UndoEffect really undoes step's side effect.
+// UndoEffect really undoes step's side effect. A pivot's effect (a
+// delivered parcel) can't be undone, by anyone.
 func (w *World) UndoEffect(step int) string {
+	if w.Def.Steps[step].Pivot {
+		return ""
+	}
 	if w.Def.Steps[step].Oracle != "" && w.Real[step] == "done" {
 		if err := w.PSP.Refund(w.Refs[step]); err != nil {
 			w.logf("psp refund failed: %v", err)
@@ -239,6 +249,15 @@ func (w *World) Post(org string, e protocol.Entry) {
 	_, _ = w.Log.Append(b)
 }
 
+// Claim gossips a censorship claim for an arbitrary entry as org, without
+// ever submitting it (Byzantine behaviour: blaming an honest operator).
+func (w *World) Claim(org string, e protocol.Entry) {
+	e.Saga, e.From = w.Def.ID, org
+	c := protocol.Claim{Entry: e.Sign(Key(org)), Time: w.Clock.Now()}
+	c = c.Sign(Key(org))
+	_ = w.Gossip.Publish(c)
+}
+
 // State evaluates the saga now.
 func (w *World) State() *protocol.State {
 	st, err := w.Org(Buyer).Car.State()
@@ -272,6 +291,9 @@ func (w *World) Run(limit time.Duration) *protocol.State {
 				}
 			}
 		}
+		if err := w.PSP.Audit(); err != nil {
+			w.logf("psp: %v", err)
+		}
 		st := w.State()
 		if s := fmt.Sprint(stageList(st)); s != stages {
 			stages = s
@@ -291,4 +313,34 @@ func stageList(st *protocol.State) []string {
 		out[i] = fmt.Sprintf("%s:%s", s.Name, s.Stage)
 	}
 	return out
+}
+
+// Censor is a log operator that misbehaves toward chosen entries: it either
+// refuses them, or signs a receipt and then never stores them. Everything
+// else passes through to the honest log.
+type Censor struct {
+	*translog.Log
+	// Mode decides what happens to an entry: "" (log it), "refuse" or "drop".
+	Mode func(e protocol.Entry) string
+}
+
+func (c *Censor) Append(data []byte) (translog.Receipt, error) {
+	var e protocol.Entry
+	_ = json.Unmarshal(data, &e)
+	switch c.Mode(e) {
+	case "refuse":
+		return translog.Receipt{}, fmt.Errorf("log unavailable")
+	case "drop":
+		return c.Log.Promise(data), nil
+	}
+	return c.Log.Append(data)
+}
+
+// CensorLog puts the operator in front of every submitter in the world.
+func (w *World) CensorLog(mode func(e protocol.Entry) string) {
+	c := &Censor{Log: w.Log, Mode: mode}
+	for _, o := range w.Orgs {
+		o.Car.Log = c
+	}
+	w.PSP.Log = c
 }

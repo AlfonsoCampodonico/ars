@@ -3,7 +3,7 @@
 // the org's agent can report real-world side effects. The agent can never
 // sign arbitrary statements or choose a vote.
 //
-//	arsd -def saga.json -org merchant -key merchant.key -log http://localhost:8070
+//	arsd -def saga.json -org merchant -key merchant.key -log http://localhost:8070 -gossip ./gossip
 package main
 
 import (
@@ -48,6 +48,7 @@ func main() {
 	org := flag.String("org", "", "this org's name in the saga")
 	keyPath := flag.String("key", "", "this org's key file (hex seed)")
 	logURL := flag.String("log", "http://localhost:8070", "transparency log URL")
+	gossipDir := flag.String("gossip", "gossip", "directory shared by every org for censorship claims")
 	tick := flag.Duration("tick", 2*time.Second, "how often to vote and post receipts")
 	flag.Parse()
 	log.SetOutput(os.Stderr) // stdout belongs to MCP
@@ -68,7 +69,7 @@ func main() {
 		log.Fatal(err)
 	}
 	car := &sidecar.Sidecar{Org: *org, Key: key, Def: &def, Plans: protocol.CheckoutPlans(),
-		Log: &translog.Client{Base: *logURL}}
+		Log: &translog.Client{Base: *logURL}, Gossip: protocol.DirGossip{Dir: *gossipDir}}
 
 	go func() {
 		for range time.Tick(*tick) {
@@ -105,7 +106,7 @@ func main() {
 				if err := f(in); err != nil {
 					return nil, ack{false, err.Error()}, nil
 				}
-				return nil, ack{true, "signed and posted to the log"}, nil
+				return nil, ack{true, "signed and filed"}, nil
 			})
 	}
 	attest := func(name, desc string, f func(attestIn) error) {
@@ -114,7 +115,7 @@ func main() {
 				if err := f(in); err != nil {
 					return nil, ack{false, err.Error()}, nil
 				}
-				return nil, ack{true, "signed and posted to the log"}, nil
+				return nil, ack{true, "signed and filed"}, nil
 			})
 	}
 	attest("attest_effect", "As a step's owner: report that you PERFORMED its side effect (after doing it).",

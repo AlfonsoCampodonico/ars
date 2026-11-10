@@ -1,9 +1,14 @@
 package protocol
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
+
+	"github.com/AlfonsoCampodonico/ars/translog"
 )
 
 // Stage of a step. Names match the TLA+ spec.
@@ -16,6 +21,7 @@ const (
 	RespondPh Stage = "respond" // beneficiary may still confirm or dispute
 	Committed Stage = "committed"
 	Aborted   Stage = "aborted"
+	Disputed  Stage = "disputed" // the beneficiary disputes and no oracle can settle it
 	Cancelled Stage = "cancelled"
 )
 
@@ -49,6 +55,14 @@ type Dispute struct {
 	Benef string `json:"benef"`
 }
 
+// Censorship is an org (or oracle) saying the log operator refused one of
+// its entries. Nobody can tell whether the operator or the claimant lied.
+type Censorship struct {
+	Step int    `json:"step"`
+	Kind Kind   `json:"kind"`
+	From string `json:"from"`
+}
+
 // Bond outcomes at settlement.
 const (
 	BondHeld     = "held"
@@ -57,21 +71,25 @@ const (
 	BondReturned = "returned"
 )
 
-// State is everything derivable from (definition, log, now).
+// State is everything derivable from (definition, log, claims, now).
 type State struct {
 	Def          *SagaDef          `json:"-"`
 	Now          time.Time         `json:"now"`
 	Steps        []StepState       `json:"steps"`
-	Aborted      bool              `json:"aborted"`
-	AbortAt      time.Time         `json:"abort_at,omitzero"`
-	Comp         string            `json:"compensation"` // none, open, respond, closed
+	Aborted      bool              `json:"aborted"` // a step aborted: compensation runs
+	Held         bool              `json:"held"`    // a step is disputed: nothing commits or unwinds
+	EndedAt      time.Time         `json:"ended_at,omitzero"`
+	Comp         string            `json:"compensation"` // none, open, respond, closed, held
 	UndoDeadline time.Time         `json:"undo_deadline,omitzero"`
 	CompDeadline time.Time         `json:"compensation_deadline,omitzero"`
 	Finished     bool              `json:"finished"`
 	Evidence     []Evidence        `json:"evidence"`
 	Disputes     []Dispute         `json:"disputes"`
+	Censored     []Censorship      `json:"censored"`
+	Operator     []Evidence        `json:"operator_evidence"` // against the log operator
 	Bonds        map[string]string `json:"bonds"`
-	ix           index
+	log          index             // entries on the log, in their final windows
+	signed       index             // log plus credible claims: what each party filed
 }
 
 type ikey struct {
@@ -143,8 +161,9 @@ func accepted(def *SagaDef, e Entry) bool {
 }
 
 // Evaluate derives the saga state. It is deterministic: every org running
-// it over the same log at the same time gets the same answer.
-func Evaluate(def *SagaDef, plans Plans, recs []Record, now time.Time) (*State, error) {
+// it over the same log and claims at the same time gets the same answer.
+// Outcomes depend on the log alone; claims only change who is blamed.
+func Evaluate(def *SagaDef, plans Plans, recs []Record, claims []Claim, now time.Time) (*State, error) {
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
@@ -216,28 +235,43 @@ func Evaluate(def *SagaDef, plans Plans, recs []Record, now time.Time) (*State, 
 		}
 		w := effWin(i)
 		ix = buildIndex(byStep[i], map[Kind]window{KEffect: attWin(i), KConfirm: w, KDispute: w, KODone: w})
-		if ix.effectOK(def, i) {
+		switch {
+		case ix.effectOK(def, i):
 			ss.Stage, ss.decided = Committed, ss.EffectDeadline
-		} else {
+		case ix.effectDisputed(def, i):
+			ss.Stage, ss.decided = Disputed, ss.EffectDeadline
+		default:
 			ss.Stage, ss.decided = Aborted, ss.EffectDeadline
 		}
 	}
 
-	// The earliest abort aborts the saga; everything not decided by then is cancelled.
-	for _, ss := range st.Steps {
-		if ss.Stage == Aborted && (!st.Aborted || ss.decided.Before(st.AbortAt)) {
-			st.Aborted, st.AbortAt = true, ss.decided
+	// The earliest abort or dispute ends the saga; everything not decided by
+	// then is cancelled. On a tie the dispute wins: holding moves no money.
+	var end *StepState
+	for i := range st.Steps {
+		ss := &st.Steps[i]
+		if ss.Stage != Aborted && ss.Stage != Disputed {
+			continue
+		}
+		if end == nil || ss.decided.Before(end.decided) || (ss.decided.Equal(end.decided) && ss.Stage == Disputed) {
+			end = ss
 		}
 	}
-	if st.Aborted {
+	if end != nil {
+		st.Aborted, st.Held, st.EndedAt = end.Stage == Aborted, end.Stage == Disputed, end.decided
 		for i := range st.Steps {
 			ss := &st.Steps[i]
-			decided := ss.Stage == Committed || ss.Stage == Aborted
-			if !decided || ss.decided.After(st.AbortAt) {
+			decided := ss.Stage == Committed || ss.Stage == Aborted || ss.Stage == Disputed
+			if !decided || ss.decided.After(st.EndedAt) || st.Held && ss.Stage == Aborted {
 				ss.Stage = Cancelled
 			}
 		}
-		st.UndoDeadline = st.AbortAt.Add(def.CompDur.Duration)
+	}
+	switch {
+	case st.Held:
+		st.Comp = "held"
+	case st.Aborted:
+		st.UndoDeadline = st.EndedAt.Add(def.CompDur.Duration)
 		st.CompDeadline = st.UndoDeadline.Add(def.CompRespondDur.Duration)
 		switch {
 		case !now.After(st.UndoDeadline):
@@ -249,34 +283,37 @@ func Evaluate(def *SagaDef, plans Plans, recs []Record, now time.Time) (*State, 
 		}
 	}
 
-	// Pass 2: final windows (cut at the abort) for evidence and obligations.
-	all := index{}
-	for i := range def.Steps {
+	// Pass 2: final windows (cut where the saga ended) for evidence and obligations.
+	wins := func(i int) map[Kind]window {
 		pw, aw, ew := planWin(i), attWin(i), effWin(i)
-		if st.Aborted {
-			pw.to, aw.to, ew.to = minTime(pw.to, st.AbortAt), minTime(aw.to, st.AbortAt), minTime(ew.to, st.AbortAt)
+		if end != nil {
+			pw.to, aw.to, ew.to = minTime(pw.to, st.EndedAt), minTime(aw.to, st.EndedAt), minTime(ew.to, st.EndedAt)
 		}
-		uw := window{st.AbortAt, st.UndoDeadline, st.Aborted, false}
-		cw := window{st.AbortAt, st.CompDeadline, st.Aborted, false}
-		wins := map[Kind]window{KVote: pw, KEffect: aw, KReceipt: uw, KUndo: uw}
+		uw := window{st.EndedAt, st.UndoDeadline, st.Aborted, false}
+		cw := window{st.EndedAt, st.CompDeadline, st.Aborted, false}
+		m := map[Kind]window{KVote: pw, KEffect: aw, KReceipt: uw, KUndo: uw}
 		for _, k := range respondKinds {
-			wins[k] = ew
+			m[k] = ew
 		}
 		for _, k := range compRespondKinds {
-			wins[k] = cw
+			m[k] = cw
 		}
-		for k, v := range buildIndex(byStep[i], wins) {
-			all[k] = v
+		return m
+	}
+	st.log = index{}
+	for i := range def.Steps {
+		for k, v := range buildIndex(byStep[i], wins(i)) {
+			st.log[k] = v
 		}
 	}
-	st.ix = all
+	st.addClaims(claims, wins)
 	st.collectEvidence()
 
 	allCommitted := true
 	for _, ss := range st.Steps {
 		allCommitted = allCommitted && ss.Stage == Committed
 	}
-	st.Finished = allCommitted || st.Comp == "closed"
+	st.Finished = allCommitted || st.Comp == "closed" || st.Held
 	for _, o := range def.Orgs {
 		st.Bonds[o.Name] = BondHeld
 	}
@@ -294,6 +331,63 @@ func Evaluate(def *SagaDef, plans Plans, recs []Record, now time.Time) (*State, 
 		}
 	}
 	return st, nil
+}
+
+// addClaims builds the signed view: the log plus every credible claim. A
+// claim counts when it is validly signed, in the claimant's role, filed
+// inside the window its entry belongs to, and not settled by the log. An
+// entry is a broken promise (evidence against the operator) if any claim
+// for it carries a receipt the log doesn't honor; otherwise it is an
+// unresolved censorship dispute. Claims are sorted first, so the result
+// doesn't depend on the order gossip delivered them in.
+func (st *State) addClaims(claims []Claim, wins func(int) map[Kind]window) {
+	def := st.Def
+	st.signed = index{}
+	for k, v := range st.log {
+		st.signed[k] = v
+	}
+	claims = slices.Clone(claims)
+	slices.SortFunc(claims, func(a, b Claim) int { return bytes.Compare(a.Sig, b.Sig) })
+	type verdict struct {
+		entry   Entry
+		receipt *translog.Receipt
+	}
+	found := map[ikey]*verdict{}
+	var keys []ikey
+	for _, c := range claims {
+		e := c.Entry
+		if !accepted(def, e) || !c.Verify(def.key(e.From)) {
+			continue
+		}
+		w := wins(e.Step)[e.Kind]
+		k := ikey{e.Kind, e.From, e.Step}
+		if !w.has(c.Time) || st.log.has(e.Kind, e.From, e.Step) {
+			continue
+		}
+		st.signed[k] = append(st.signed[k], e)
+		v := found[k]
+		if v == nil {
+			v = &verdict{entry: e}
+			found[k] = v
+			keys = append(keys, k)
+		}
+		// An honored receipt would have put the entry on the log inside its
+		// window, which was skipped above: a valid receipt here is broken.
+		data, _ := json.Marshal(e)
+		if r := c.Receipt; v.receipt == nil && r != nil && r.Verify(def.LogKey) && r.For(data) && w.has(r.Time) {
+			v.entry, v.receipt = e, r
+		}
+	}
+	for _, k := range keys {
+		v := found[k]
+		if v.receipt == nil {
+			st.Censored = append(st.Censored, Censorship{k.step, k.kind, k.from})
+			continue
+		}
+		st.Operator = append(st.Operator, Evidence{"log operator", "broken promise", k.step,
+			fmt.Sprintf("signed a receipt for %s's %s at index %d, then didn't keep it", k.from, k.kind, v.receipt.Index),
+			[]Entry{v.entry}})
+	}
 }
 
 func buildIndex(recs []Record, wins map[Kind]window) index {
@@ -344,50 +438,58 @@ func (ix index) effectOK(def *SagaDef, step int) bool {
 	return ix.has(KConfirm, s.Benef, step) && !ix.has(KDispute, s.Benef, step)
 }
 
-// Has reports whether an entry of this kind/signer/step counts in the
-// current final windows.
-func (st *State) Has(k Kind, from string, step int) bool { return st.ix.has(k, from, step) }
+// effectDisputed: the beneficiary disputes an attested effect no oracle covers.
+func (ix index) effectDisputed(def *SagaDef, step int) bool {
+	s := def.Steps[step]
+	return s.Oracle == "" && ix.has(KEffect, s.Owner, step) && ix.has(KDispute, s.Benef, step)
+}
+
+// Filed reports whether the signer filed an entry of this kind for step in
+// its final window, on the log or as a credible censorship claim.
+func (st *State) Filed(k Kind, from string, step int) bool { return st.signed.has(k, from, step) }
 
 // PlanPassed reports whether step's plan has a clean commit certificate.
-func (st *State) PlanPassed(step int) bool { return st.ix.planPassed(st.Def, step) }
+func (st *State) PlanPassed(step int) bool { return st.log.planPassed(st.Def, step) }
 
-func (st *State) attested(i int) bool {
-	return st.ix.has(KEffect, st.Def.Steps[i].Owner, i)
-}
+func (st *State) attestFiled(i int) bool { return st.Filed(KEffect, st.Def.Steps[i].Owner, i) }
 
-// BenefDue: the beneficiary must confirm or dispute step i's effect. On
-// oracle steps the oracle decides and the beneficiary has no duty.
+// BenefDue: the beneficiary must confirm or dispute step i's effect, once
+// the attestation is on the log. On oracle steps the oracle decides and the
+// beneficiary has no duty.
 func (st *State) BenefDue(i int) bool {
-	return st.Def.Steps[i].Oracle == "" && st.attested(i)
+	s := st.Def.Steps[i]
+	return s.Oracle == "" && st.log.has(KEffect, s.Owner, i)
 }
 
-// UndoBenefDue: the beneficiary must check the owner's undo of step i.
+// UndoBenefDue: the beneficiary must check the owner's logged undo of step i.
 func (st *State) UndoBenefDue(i int) bool {
 	s := st.Def.Steps[i]
-	return s.Oracle == "" && st.ix.has(KUndo, s.Owner, i)
+	return s.Oracle == "" && st.log.has(KUndo, s.Owner, i)
 }
 
 // OwesReceipt: every org must post a receipt for committed step i.
 func (st *State) OwesReceipt(i int) bool { return st.Aborted && st.Steps[i].Stage == Committed }
 
-// OwesUndo: the owner must undo step i's attested effect.
-func (st *State) OwesUndo(i int) bool { return st.Aborted && st.attested(i) }
+// OwesUndo: the owner must undo step i's attested effect, unless the step
+// is a pivot, whose effect can't be undone.
+func (st *State) OwesUndo(i int) bool {
+	return st.Aborted && !st.Def.Steps[i].Pivot && st.attestFiled(i)
+}
+
+func (st *State) closed(i int) bool {
+	s := st.Steps[i].Stage
+	return s == Committed || s == Aborted || s == Disputed
+}
 
 func (st *State) planClosed(i int) bool {
-	switch st.Steps[i].Stage {
-	case EffectPh, RespondPh, Committed, Aborted:
-		return true
-	}
-	return false
+	s := st.Steps[i].Stage
+	return s == EffectPh || s == RespondPh || st.closed(i)
 }
 
-func (st *State) effectClosed(i int) bool {
-	s := st.Steps[i].Stage
-	return (s == Committed || s == Aborted) && st.PlanPassed(i)
-}
+func (st *State) effectClosed(i int) bool { return st.closed(i) && st.PlanPassed(i) }
 
 func (st *State) collectEvidence() {
-	def, ix := st.Def, st.ix
+	def, ix := st.Def, st.signed
 	add := func(o, kind string, step int, detail string, proof ...Entry) {
 		st.Evidence = append(st.Evidence, Evidence{o, kind, step, detail, proof})
 	}
@@ -423,10 +525,10 @@ func (st *State) collectEvidence() {
 				add(o, "silent voter", i, "no vote before the plan deadline")
 			}
 			if o == s.Owner {
-				if st.effectClosed(i) && !st.attested(i) {
+				if st.effectClosed(i) && !st.attestFiled(i) {
 					add(o, "silent owner", i, "no effect attestation before the deadline")
 				}
-				if s.Oracle != "" && st.effectClosed(i) && st.attested(i) && !ix.has(KODone, s.Oracle, i) {
+				if s.Oracle != "" && st.effectClosed(i) && st.attestFiled(i) && !ix.has(KODone, s.Oracle, i) {
 					add(o, "false attestation", i, "oracle never saw the claimed effect", ix.first(KEffect, o, i)...)
 				}
 				if s.Oracle != "" && closed && ix.has(KUndo, o, i) && !ix.has(KOUndone, s.Oracle, i) {
@@ -466,7 +568,7 @@ func (st *State) collectEvidence() {
 		}
 	}
 	for i, s := range def.Steps {
-		if s.Oracle == "" && (ix.has(KDispute, s.Benef, i) || ix.has(KUndoDispute, s.Benef, i)) {
+		if s.Oracle == "" && (st.log.has(KDispute, s.Benef, i) || st.log.has(KUndoDispute, s.Benef, i)) {
 			st.Disputes = append(st.Disputes, Dispute{i, s.Owner, s.Benef})
 		}
 	}
@@ -484,6 +586,11 @@ func (st *State) Accused() map[string]bool {
 func (st *State) inDispute(o string) bool {
 	for _, d := range st.Disputes {
 		if d.Owner == o || d.Benef == o {
+			return true
+		}
+	}
+	for _, c := range st.Censored {
+		if c.From == o {
 			return true
 		}
 	}

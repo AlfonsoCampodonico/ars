@@ -49,9 +49,40 @@ func (c Checkpoint) Verify(pub ed25519.PublicKey) bool {
 	return ed25519.Verify(pub, c.signed(), c.Sig)
 }
 
+// Receipt is the operator's signed promise that a leaf sits at Index with
+// this timestamp. If the log ever serves something else at Index, the
+// receipt proves the operator dropped or re-timestamped the entry.
+type Receipt struct {
+	Origin   string    `json:"origin"`
+	Index    uint64    `json:"index"`
+	Time     time.Time `json:"time"`
+	LeafHash string    `json:"leaf_hash"` // hex merkle.LeafHash(Leaf.Bytes())
+	Sig      []byte    `json:"sig"`
+}
+
+func (r Receipt) signed() []byte {
+	return []byte(fmt.Sprintf("receipt\n%s\n%d\n%d\n%s\n", r.Origin, r.Index, r.Time.UnixNano(), r.LeafHash))
+}
+
+// Verify checks the operator's signature.
+func (r Receipt) Verify(pub ed25519.PublicKey) bool {
+	return len(pub) == ed25519.PublicKeySize && ed25519.Verify(pub, r.signed(), r.Sig)
+}
+
+// For reports whether the receipt promises data at the receipt's time.
+func (r Receipt) For(data []byte) bool {
+	return r.LeafHash == LeafHash(Leaf{Index: r.Index, Time: r.Time, Data: data})
+}
+
+// LeafHash is the hex Merkle leaf hash of l.
+func LeafHash(l Leaf) string {
+	h := merkle.LeafHash(l.Bytes())
+	return hex.EncodeToString(h[:])
+}
+
 // API is what clients (sidecars, witnesses) need from a log.
 type API interface {
-	Append(data []byte) (Leaf, error)
+	Append(data []byte) (Receipt, error)
 	Entries(from uint64) ([]Leaf, error)
 	Latest() (Checkpoint, error)
 	CheckpointAt(size uint64) (Checkpoint, error)
@@ -89,15 +120,18 @@ func (l *Log) sign(size uint64, root merkle.Hash) Checkpoint {
 	return c
 }
 
-// Append stores data with the log's current timestamp.
-func (l *Log) Append(data []byte) (Leaf, error) {
+// Append stores data with the log's current timestamp and returns a signed
+// receipt for it.
+func (l *Log) Append(data []byte) (Receipt, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	lf := Leaf{Index: uint64(len(l.leaves)), Time: l.clock(), Data: append([]byte(nil), data...)}
 	l.leaves = append(l.leaves, lf)
 	l.hashes = append(l.hashes, merkle.LeafHash(lf.Bytes()))
 	l.cps = append(l.cps, l.sign(uint64(len(l.hashes)), merkle.Root(l.hashes)))
-	return lf, nil
+	r := Receipt{Origin: l.origin, Index: lf.Index, Time: lf.Time, LeafHash: LeafHash(lf)}
+	r.Sig = ed25519.Sign(l.key, r.signed())
+	return r, nil
 }
 
 func (l *Log) Entries(from uint64) ([]Leaf, error) {
@@ -243,4 +277,16 @@ func decodeRoot(s string) (merkle.Hash, error) {
 	}
 	copy(h[:], b)
 	return h, nil
+}
+
+// Promise signs a receipt for data at the next index without storing it.
+// It exists to simulate an operator that breaks its promises in tests and
+// demos, the same way Fork simulates one that equivocates.
+func (l *Log) Promise(data []byte) Receipt {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lf := Leaf{Index: uint64(len(l.leaves)), Time: l.clock(), Data: data}
+	r := Receipt{Origin: l.origin, Index: lf.Index, Time: lf.Time, LeafHash: LeafHash(lf)}
+	r.Sig = ed25519.Sign(l.key, r.signed())
+	return r
 }
